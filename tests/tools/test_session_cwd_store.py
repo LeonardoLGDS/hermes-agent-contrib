@@ -73,9 +73,10 @@ class TestPostCommandDualWrite:
             env = {}
             cwd = "/start"
             def execute(self, command, **kwargs):
-                # Simulate the env's own post-command tracking (marker parse).
+                # Simulate the env's own post-command tracking (marker parse):
+                # the marker is what moves cwd AND what flags the observation.
                 self.cwd = "/new/dir"
-                return {"output": "", "returncode": 0}
+                return {"output": "", "returncode": 0, "cwd_observed": True}
 
         result = self._run(monkeypatch, "sess-a", FakeEnv())
         assert result["exit_code"] == 0
@@ -187,6 +188,8 @@ class TestCommandCwdReadsTheRecord:
                 self.last_cwd_arg = kwargs.get("cwd")
                 if command.startswith("cd "):
                     self.cwd = command[3:]
+                    # A completed cd emits the cwd marker; the parse sets both.
+                    return {"output": "", "returncode": 0, "cwd_observed": True}
                 return {"output": "", "returncode": 0}
 
         fake = FakeEnv()
