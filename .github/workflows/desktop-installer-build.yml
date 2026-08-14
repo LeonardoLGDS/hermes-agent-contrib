@@ -1,0 +1,55 @@
+name: Desktop installer build (private mirror)
+
+# Builds a Windows NSIS installer from a branch of this fork so the desktop
+# client can be refreshed from our own code instead of waiting on upstream.
+# workflow_dispatch only, private-mirror file: lives on rescue/local-dirty and
+# is never merged upstream (the upstream repo gets its releases from its own
+# pipeline).
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Branch to build the installer from
+        required: false
+        default: rescue/local-dirty
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows-nsis:
+    name: Windows NSIS installer
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.branch || 'rescue/local-dirty' }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install workspace deps
+        run: npm ci
+
+      - name: Build Windows NSIS installer
+        working-directory: apps/desktop
+        run: npm run dist:win:nsis
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: hermes-win-installer
+          path: apps/desktop/release/*
+          if-no-files-found: error
+          retention-days: 90
