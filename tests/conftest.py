@@ -22,6 +22,7 @@ test runner at ``scripts/run_tests.sh``.
 import asyncio
 import atexit
 import os
+import shlex
 import shutil
 import sqlite3
 import sys
@@ -1282,6 +1283,91 @@ def pytest_collection_modifyitems(config, items):  # noqa: D401 — pytest hook
             item.add_marker(skip_marker)
 
 
+_GIT_MUTATING_VERBS = frozenset(
+    {
+        "stash", "checkout", "switch", "restore", "reset", "clean", "merge",
+        "rebase", "pull", "cherry-pick", "revert", "commit", "add", "rm", "mv",
+        "apply", "am", "worktree",
+    }
+)
+
+
+def _git_target(cmd, cwd=None):
+    """Return (git command, resolved target) for subprocess guard inspection."""
+    if isinstance(cmd, str):
+        try:
+            tokens = shlex.split(cmd)
+        except ValueError:
+            tokens = cmd.split()
+    elif isinstance(cmd, (list, tuple)):
+        tokens = [str(token) for token in cmd]
+    else:
+        return None, None
+    if not tokens or Path(tokens[0]).name.lower() not in {"git", "git.exe"}:
+        return None, None
+
+    base = Path(cwd or os.getcwd())
+    work_tree = None
+    git_dir = None
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "-C" and index + 1 < len(tokens):
+            base = Path(tokens[index + 1])
+            index += 2
+            continue
+        if token in {"--work-tree", "--git-dir"} and index + 1 < len(tokens):
+            value = tokens[index + 1]
+            if token == "--work-tree":
+                work_tree = value
+            else:
+                git_dir = value
+            index += 2
+            continue
+        if token.startswith("--work-tree="):
+            work_tree = token.split("=", 1)[1]
+            index += 1
+            continue
+        if token.startswith("--git-dir="):
+            git_dir = token.split("=", 1)[1]
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        break
+    verb = tokens[index].lower() if index < len(tokens) else ""
+    if work_tree:
+        target = Path(work_tree)
+        if not target.is_absolute():
+            target = base / target
+    elif git_dir:
+        target = Path(git_dir)
+        if not target.is_absolute():
+            target = base / target
+        target = target.parent if target.name == ".git" else target
+    else:
+        target = base
+    return verb, target.resolve(strict=False)
+
+
+def _check_git_subprocess_cmd(name, cmd, cwd=None):
+    """Reject mutating git commands whose target is the live checkout."""
+    verb, target = _git_target(cmd, cwd)
+    if verb is None:
+        return
+    root = PROJECT_ROOT.resolve(strict=False)
+    try:
+        protected = target == root or root in target.parents
+    except (OSError, RuntimeError):
+        protected = False
+    if protected and (verb in _GIT_MUTATING_VERBS or verb in {"fetch", "push"}):
+        raise RuntimeError(
+            f"tests/conftest.py live-system guard: blocked subprocess.{name}"
+            f"({cmd!r}) - git {verb} targets the live checkout"
+        )
+
+
 @pytest.fixture(autouse=True)
 def _live_system_guard(request, monkeypatch):
     """Block real os.kill / systemctl / gateway-pid scans during tests.
@@ -1487,7 +1573,9 @@ def _live_system_guard(request, monkeypatch):
                     return True
         return False
 
-    def _check_subprocess_cmd(name, cmd):
+    def _check_subprocess_cmd(name, cmd, cwd=None):
+        # Guard git mutations here so every subprocess entry point shares one target check.
+        _check_git_subprocess_cmd(name, cmd, cwd=cwd)
         if _is_blocked_systemctl(cmd):
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "
@@ -1542,7 +1630,7 @@ def _live_system_guard(request, monkeypatch):
 
     def _wrap_subprocess(name, real):
         def _guarded(cmd, *args, **kwargs):
-            _check_subprocess_cmd(name, cmd)
+            _check_subprocess_cmd(name, cmd, cwd=kwargs.get("cwd"))
             return real(cmd, *args, **kwargs)
         _guarded.__name__ = f"_guarded_{name}"
         # Make the wrapper subscriptable like the wrapped callable when
@@ -1560,7 +1648,7 @@ def _live_system_guard(request, monkeypatch):
 
         class _GuardedPopen(real):  # type: ignore[misc, valid-type]
             def __init__(self, cmd, *args, **kwargs):
-                _check_subprocess_cmd("Popen", cmd)
+                _check_subprocess_cmd("Popen", cmd, cwd=kwargs.get("cwd"))
                 super().__init__(cmd, *args, **kwargs)
 
         _GuardedPopen.__name__ = "Popen"
