@@ -233,7 +233,11 @@ class TestBackCompatAlias:
     new kill function so old imports don't break."""
 
     def test_alias_is_the_kill_function(self):
-        assert _warn_stale_dashboard_processes is _kill_stale_dashboard_processes
+        # Resolve both names from one canonical module to catch import forks in #90182.
+        live = importlib.import_module("hermes_cli.main")
+        warn = live._warn_stale_dashboard_processes
+        kill = live._kill_stale_dashboard_processes
+        assert warn is kill
 
 
 class TestDashboardUpdateCleanup:
