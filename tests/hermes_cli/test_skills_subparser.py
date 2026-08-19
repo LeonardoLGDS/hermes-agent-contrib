@@ -1,6 +1,8 @@
 """Test that skills subparser doesn't conflict (regression test for #898)."""
 
 import argparse
+import importlib
+import sys
 
 
 def test_no_duplicate_skills_subparser():
@@ -14,17 +16,15 @@ def test_no_duplicate_skills_subparser():
 
     if the duplicate 'skills' registration is reintroduced.
     """
-    # Force fresh import of the module where parser is constructed
-    # If there are duplicate 'skills' subparsers, this import will raise
-    # argparse.ArgumentError at module load time
-    import sys
-
-    # Remove cached module if present
-    if 'hermes_cli.main' in sys.modules:
-        del sys.modules['hermes_cli.main']
-
+    # Import through the canonical cache so collection cannot fork hermes_cli.main.
+    package = importlib.import_module("hermes_cli")
+    missing = object()
+    previous_module = sys.modules.get("hermes_cli.main", missing)
+    previous_attribute = getattr(package, "main", missing)
     try:
-        import hermes_cli.main  # noqa: F401
+        imported = importlib.import_module("hermes_cli.main")
+        assert sys.modules["hermes_cli.main"] is imported
+        assert sys.modules["hermes_cli.main"] is package.main
     except argparse.ArgumentError as e:
         if "conflicting subparser" in str(e):
             raise AssertionError(
@@ -32,3 +32,14 @@ def test_no_duplicate_skills_subparser():
                 "See issue #898 for details."
             ) from e
         raise
+    finally:
+        # Restore both references so this import check cannot pollute later tests.
+        if previous_module is missing:
+            sys.modules.pop("hermes_cli.main", None)
+        else:
+            sys.modules["hermes_cli.main"] = previous_module
+        if previous_attribute is missing:
+            if hasattr(package, "main"):
+                delattr(package, "main")
+        else:
+            package.main = previous_attribute
