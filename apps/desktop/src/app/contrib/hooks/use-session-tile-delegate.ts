@@ -419,7 +419,7 @@ export function useSessionTileDelegate({
         if (isReadOnlyRuntimeId(runtimeId)) {
           notify({ kind: 'info', message: translateNow('desktop.readOnlyTranscriptSendBlocked') })
 
-          return runtimeId
+          return { runtimeSessionId: runtimeId, storedSessionId: null }
         }
 
         const storedSessionId = storedSessionIdForRuntime(runtimeId)
